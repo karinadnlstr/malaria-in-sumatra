@@ -18,7 +18,14 @@ library(spdep)
 
 # malaria data
 sismal <- readRDS(here("data", "esismal_2019-2021_sumatera_v5.rds")) |> 
-  mutate(status = if_else(status=="Achieved", "Certified", status))
+  mutate(status = if_else(status == "Achieved", "Certified", status),
+         age_group = if_else(age_group == "0-4"|age_group == "5-14", "<15", age_group),
+         age_group = factor(age_group, levels = c("<15",
+                                                  "15-24",
+                                                  "25-64",
+                                                  "65+")),
+         occupation_mmp = if_else(age_group=="<15"&occupation=="Unemployed", NA_character_, occupation_mmp),
+         occupation_mmp = factor(occupation_mmp, levels = c("MMP", "NonMMP")))
 
 # land use data
 land_use <- read.csv(here("data", "land_use.csv"))
@@ -317,6 +324,7 @@ sismal <- sismal |>
     relapsing = relevel(relapsing, ref = "New case"),
     pq14 = relevel(pq14, ref = "Ya"))
 
+
 ## Bivariable logistic regression -----
 
 characteristic_variables <- c("age_group", "gender", "pregnancy_status", "occupation_mmp", 
@@ -330,21 +338,21 @@ char_bilogreg_results <- map_df(characteristic_variables, function(var) {
     mutate(variable = var)
 })
 
-char_bilogreg_results <- bilogreg_results |> 
+char_bilogreg_results <- char_bilogreg_results |> 
   select(variable, term, estimate, conf.low, conf.high, p.value) |> 
   filter(term != "(Intercept)")
 
-write.xlsx(bilogreg_results, here("output"), rowNames=FALSE)
+write.xlsx(char_bilogreg_results, here("output","char_bilogreg.xlsx"), rowNames=FALSE)
 
 ## Multivariable logistic regression -----
 
 char_multilogreg <- glm(classification ~ age_group + gender + occupation_mmp  +
                           hf_type + case_detect + lab + parasite + hospitalisation +
-                          severity + relapsing + pq14, data = sismal, family = binomial)
+                          severity, data = sismal, family = binomial)
 summary(char_multilogreg)
 char_multilogreg_result <- tidy(char_multilogreg, exponentiate = TRUE, conf.int = TRUE)
 
-write.xlsx(char_multilogreg_result, here("output"), rowNames=FALSE)
+write.xlsx(char_multilogreg_result, here("output","char_multilogreg.xlsx"), rowNames=FALSE)
 
 
 # Calculating adjacency matrix and nearest neighbours -----
