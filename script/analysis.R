@@ -24,7 +24,7 @@ sismal <- readRDS(here("data", "esismal_2019-2021_sumatera_v5.rds")) |>
                                                   "15-24",
                                                   "25-64",
                                                   "65+")),
-         occupation_mmp = if_else(age_group=="<15"&occupation=="Unemployed", NA_character_, occupation_mmp),
+         occupation_mmp = if_else(occupation == "Unemployed", NA_character_, occupation_mmp),
          occupation_mmp = factor(occupation_mmp, levels = c("MMP", "NonMMP")))
 
 # land use data
@@ -67,6 +67,17 @@ api_2010 <- read.csv(here("data", "malaria_2010_2019_yearly.csv")) |>
 ## Malaria three years overview ----
 
 # an overview of malaria in sumatra region
+
+sismal_aggr <- sismal |> 
+  group_by(year, district) |> 
+  summarise(ncase = n(), .groups = 'drop') |> 
+  group_by(year) |>
+  mutate(
+    total_cases = sum(ncase),
+    pct_within = ncase / total_cases,
+    label = scales::percent(pct_within, accuracy = 1)) |>
+  ungroup()
+
 malaria_overview <- sismal |>  
   select(year, gender, pregnancy_status, age_group, occupation_mmp, 
          case_detect, lab, parasite, treatment, hf_type,
@@ -310,8 +321,7 @@ pq14_overview <- sismal |>
 # data modification, re-level malaria data for the regression
 sismal <- sismal |> 
   mutate(
-    age_group = relevel(age_group, ref = "25-64"),
-    gender = relevel(gender, ref = "Male"),
+    gender = relevel(gender, ref = "Female"),
     pregnancy_status = relevel(pregnancy_status, ref = "Not pregnant"),
     occupation_mmp = relevel(occupation_mmp, ref = "NonMMP"),
     hf_type = relevel(hf_type, ref = "PHC"),
@@ -331,15 +341,15 @@ characteristic_variables <- c("age_group", "gender", "pregnancy_status", "occupa
                               "hf_type", "case_detect", "lab", "parasite",
                               "hospitalisation", "severity", "death", "relapsing", "pq14")
 
-char_bilogreg_results <- map_df(characteristic_variables, function(var) {
+char_bilogreg <- map_df(characteristic_variables, function(var) {
   formula_str <- paste("classification ~", var)
   model <- glm(as.formula(formula_str), data = sismal, family = binomial)
   tidy(model, exponentiate = TRUE, conf.int = TRUE) |> 
     mutate(variable = var)
 })
 
-char_bilogreg_results <- char_bilogreg_results |> 
-  select(variable, term, estimate, conf.low, conf.high, p.value) |> 
+char_bilogreg_results <- char_bilogreg |> 
+  select(term, estimate, std.error, statistic, conf.low, conf.high, p.value) |> 
   filter(term != "(Intercept)")
 
 write.xlsx(char_bilogreg_results, here("output","char_bilogreg.xlsx"), rowNames=FALSE)
