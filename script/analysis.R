@@ -12,11 +12,11 @@ library(broom)
 library(car)
 library(sf)
 library(spdep)
+library(lme4)
 
 
 # Data load -----
 
-# malaria data
 sismal <- readRDS(here("data", "esismal_2019-2021_sumatera_v5.rds")) |> 
   mutate(status = if_else(status == "Achieved", "Certified", status),
          age_group = if_else(age_group == "0-4"|age_group == "5-14", "<15", age_group),
@@ -24,7 +24,7 @@ sismal <- readRDS(here("data", "esismal_2019-2021_sumatera_v5.rds")) |>
                                                   "15-24",
                                                   "25-64",
                                                   "65+")),
-         occupation_mmp = if_else(occupation == "Unemployed", NA_character_, occupation_mmp),
+         occupation_mmp = if_else(age_group=="<15" & is.na(occupation_mmp), "NonMMP", occupation_mmp),
          occupation_mmp = factor(occupation_mmp, levels = c("MMP", "NonMMP")))
 
 # land use data
@@ -66,8 +66,7 @@ api_2010 <- read.csv(here("data", "malaria_2010_2019_yearly.csv")) |>
 
 ## Malaria three years overview ----
 
-# an overview of malaria in sumatra region
-
+# aggregation by year and district
 sismal_aggr <- sismal |> 
   group_by(year, district) |> 
   summarise(ncase = n(), .groups = 'drop') |> 
@@ -78,6 +77,16 @@ sismal_aggr <- sismal |>
     label = scales::percent(pct_within, accuracy = 1)) |>
   ungroup()
 
+# proportion of imported cases in malaria-free areas
+summary_diststat_clas <- sismal |> 
+  group_by(status, classification) |> 
+  summarise(ncase = n(), .groups = 'drop') |> 
+  group_by(classification) |>
+  mutate(total_cases = sum(ncase)) |>
+  ungroup() |> 
+  mutate(percentage = ncase / total_cases)
+
+# an overview of malaria in sumatra region
 malaria_overview <- sismal |>  
   select(year, gender, pregnancy_status, age_group, occupation_mmp, 
          case_detect, lab, parasite, treatment, hf_type,
@@ -106,7 +115,7 @@ malaria_overview <- sismal |>
          n_prop_total = paste0(total, " (", prop, ")"),
          cat = if_else(is.na(cat), "Unknown", cat))
 
-write.xlsx(malaria_overview, here("output"), rowNames=FALSE)
+write.xlsx(malaria_overview, here("output", "malaria_overview.xlsx"), rowNames=FALSE)
 
 
 ## Summary table of epidemiological investigation ----
@@ -222,16 +231,22 @@ pe_overview <- sismal |>
          tp_2021 = paste0(total_2021, " (", prop_2021, ")")) |> 
   arrange(sort, classification)
 
-write.xlsx(pe_overview, here("output"), rowNames=FALSE)
+write.xlsx(pe_overview, here("output", "pe_overview.xlsx"), rowNames=FALSE)
 
 
-## Epidemiology characteristic -----
+## Epidemiology characteristic / Imported-indigenous comparison -----
 
-characteristic_overview <- sismal |> 
-  select(year, status, classification,
-         gender, pregnancy_status, age_group, occupation_mmp, 
-         case_detect, lab, parasite, relapsing, treatment, hf_type,
-         severity, hospitalisation, death) |> 
+# using only investigated cases and complete columns (n = 10163/10489, 3.1% missingness)
+sismal_reg <- sismal |> 
+  filter(!is.na(classification)) |>
+  select(year, classification, age_group, gender, pregnancy_status, occupation_mmp,
+         hf_type, case_detect, lab, parasite, pq14, relapsing, treatment,
+         hospitalisation, severity, death) |> 
+  drop_na(age_group, gender, occupation_mmp,
+          hf_type, case_detect, lab, parasite,
+          hospitalisation, severity)
+
+characteristic_overview <- sismal_reg |> 
   group_by(year, classification) |> 
   nest() |> 
   mutate(total_case = map(.x = data,
@@ -249,101 +264,118 @@ characteristic_overview <- sismal |>
   mutate_if(is.numeric , replace_na, replace = 0) |> 
   mutate(ind_2019 = paste0(n_2019_Indigenous, " (", prop_2019_Indigenous, ")"),
          imp_2019 = paste0(n_2019_Imported, " (", prop_2019_Imported, ")"),
-         na_2019 = paste0(n_2019_NA, " (", prop_2019_NA, ")"),
          ind_2020 = paste0(n_2020_Indigenous, " (", prop_2020_Indigenous, ")"),
          imp_2020 = paste0(n_2020_Imported, " (", prop_2020_Imported, ")"),
-         na_2020 = paste0(n_2020_NA, " (", prop_2020_NA, ")"),
          ind_2021 = paste0(n_2021_Indigenous, " (", prop_2021_Indigenous, ")"),
-         imp_2021 = paste0(n_2021_Imported, " (", prop_2021_Imported, ")"),
-         na_2021 = paste0(n_2021_NA, " (", prop_2021_NA, ")")) |> 
+         imp_2021 = paste0(n_2021_Imported, " (", prop_2021_Imported, ")")) |> 
   rowwise() |> 
   mutate(n_1_ind = sum(c_across(starts_with('n') & ends_with('Indigenous')), na.rm = TRUE),
-         n_1_imp = sum(c_across(starts_with('n') & ends_with('Imported')), na.rm = TRUE),
-         n_1_na = sum(c_across(starts_with('n') & ends_with('NA')), na.rm = TRUE)) |>
+         n_1_imp = sum(c_across(starts_with('n') & ends_with('Imported')), na.rm = TRUE)) |>
   ungroup() |> 
   group_by(key) |> 
   mutate(prop_ind = round(n_1_ind / sum(n_1_ind) * 100,1),
-         prop_imp = round(n_1_imp / sum(n_1_imp) * 100,1),
-         prop_na = round(n_1_na / sum(n_1_na) * 100,1)) |> 
+         prop_imp = round(n_1_imp / sum(n_1_imp) * 100,1)) |> 
   ungroup() |> 
   mutate(ind = paste0(n_1_ind, " (", prop_ind, ")"),
-         imp = paste0(n_1_imp, " (", prop_imp, ")"),
-         na = paste0(n_1_na, " (", prop_na, ")")) |> 
+         imp = paste0(n_1_imp, " (", prop_imp, ")")) |> 
   arrange(key)
 
-write.xlsx(characteristic_overview, here("output"), rowNames=FALSE)
-
-relapsing_overview <- sismal |> 
-  filter(parasite=="Pv" | parasite=="Po") |> 
-  group_by(year, classification, relapsing) |> 
-  summarise(n = n()) |> 
-  pivot_wider(names_from = c(classification, year), values_from = n) |> 
-  rowwise() |> 
-  mutate(ind_total = sum(c_across(starts_with('Indigenous')), na.rm = TRUE),
-         imp_total = sum(c_across(starts_with('Imported')), na.rm = TRUE),
-         na_total = sum(c_across(starts_with('NA')), na.rm = TRUE)) |>
-  ungroup() |> 
-  mutate(ind_prop = round(ind_total / sum(ind_total) * 100,1),
-         imp_prop = round(imp_total / sum(imp_total) * 100,1),
-         na_prop = round(na_total / sum(na_total) * 100,1))
-
-pregnant_overview <- sismal |> 
+pregnant_overview <- sismal_reg |> 
   filter(gender=="Female") |> 
-  group_by(year, classification, pregnancy_status) |> 
+  group_by(year, classification, pregnancy_status) |> drop_na(pregnancy_status) |> 
   summarise(n = n()) |> 
   pivot_wider(names_from = c(classification, year), values_from = n) |> 
   rowwise() |> 
   mutate(ind_total = sum(c_across(starts_with('Indigenous')), na.rm = TRUE),
-         imp_total = sum(c_across(starts_with('Imported')), na.rm = TRUE),
-         na_total = sum(c_across(starts_with('NA')), na.rm = TRUE)) |>
+         imp_total = sum(c_across(starts_with('Imported')), na.rm = TRUE)) |>
   ungroup() |> 
   mutate(ind_prop = round(ind_total / sum(ind_total) * 100,1),
-         imp_prop = round(imp_total / sum(imp_total) * 100,1),
-         na_prop = round(na_total / sum(na_total) * 100,1))
+         imp_prop = round(imp_total / sum(imp_total) * 100,1)) |> 
+  ungroup() |> 
+  mutate(ind = paste0(ind_total, " (", ind_prop, ")"),
+         imp = paste0(imp_total, " (", imp_prop, ")"))
 
-pq14_overview <- sismal |> 
-  filter(pe=="Investigated" & parasite=="Pv" | parasite=="Mix") |> 
-  group_by(year, classification, pq14) |> 
+relapsing_overview <- sismal_reg |> 
+  filter(parasite=="Pv" | parasite=="Po") |> 
+  group_by(year, classification, relapsing) |> drop_na(relapsing) |> 
   summarise(n = n()) |> 
   pivot_wider(names_from = c(classification, year), values_from = n) |> 
   rowwise() |> 
   mutate(ind_total = sum(c_across(starts_with('Indigenous')), na.rm = TRUE),
-         imp_total = sum(c_across(starts_with('Imported')), na.rm = TRUE),
-         na_total = sum(c_across(starts_with('NA')), na.rm = TRUE)) |>
+         imp_total = sum(c_across(starts_with('Imported')), na.rm = TRUE)) |>
   ungroup() |> 
   mutate(ind_prop = round(ind_total / sum(ind_total) * 100,1),
-         imp_prop = round(imp_total / sum(imp_total) * 100,1),
-         na_prop = round(na_total / sum(na_total) * 100,1))
+         imp_prop = round(imp_total / sum(imp_total) * 100,1)) |> 
+  ungroup() |> 
+  mutate(ind = paste0(ind_total, " (", ind_prop, ")"),
+         imp = paste0(imp_total, " (", imp_prop, ")"))
+
+pq14_overview <- sismal_reg |> 
+  filter(parasite=="Pv" | parasite=="Mix") |> 
+  group_by(year, classification, pq14) |> drop_na(pq14) |> 
+  summarise(n = n()) |> 
+  pivot_wider(names_from = c(classification, year), values_from = n) |> 
+  rowwise() |> 
+  mutate(ind_total = sum(c_across(starts_with('Indigenous')), na.rm = TRUE),
+         imp_total = sum(c_across(starts_with('Imported')), na.rm = TRUE)) |>
+  ungroup() |> 
+  mutate(ind_prop = round(ind_total / sum(ind_total) * 100,1),
+         imp_prop = round(imp_total / sum(imp_total) * 100,1)) |> 
+  ungroup() |> 
+  mutate(ind = paste0(ind_total, " (", ind_prop, ")"),
+         imp = paste0(imp_total, " (", imp_prop, ")"))
+
+characteristic_overview <- characteristic_overview |> 
+  filter(cat!="Unknown") |> 
+  mutate(ind = case_when(key=="pregnancy_status" & cat == "Pregnant" ~ "91 (2.9)",
+                         key=="pregnancy_status" & cat == "Not pregnant" ~ "3065 (97.1)",
+                         key=="relapsing" & cat == "Relapse case" ~ "422 (7.3)",
+                         key=="relapsing" & cat == "New case" ~ "5357 (92.7)",
+                         key=="pq14" & cat == "Ya" ~ "6150 (97.7)",
+                         key=="pq14" & cat == "Tidak" ~ "44 (0.7)",
+                         key=="pq14" & cat == "Tidak Terpantau" ~ "103 (1.6)",
+                         TRUE ~ ind),
+         imp = case_when(key=="pregnancy_status" & cat == "Pregnant" ~ "18 (4.8)",
+                         key=="pregnancy_status" & cat == "Not pregnant" ~ "357 (95.2)",
+                         key=="relapsing" & cat == "Relapse case" ~ "252 (24.1)",
+                         key=="relapsing" & cat == "New case" ~ "795 (75.9)",
+                         key=="pq14" & cat == "Ya" ~ "629 (97.1)",
+                         key=="pq14" & cat == "Tidak" ~ "7 (1.1)",
+                         key=="pq14" & cat == "Tidak Terpantau" ~ "12 (1.9)",
+                         TRUE ~ imp),
+         cat = case_when(key=="pq14" & cat == "Ya" ~ "Complete",
+                         key=="pq14" & cat == "Tidak" ~ "Incomplete",
+                         key=="pq14" & cat == "Tidak Terpantau" ~ "Unobserved",
+                         TRUE ~ cat)) |> 
+  select(key, cat, imp, ind)
+
+write.xlsx(characteristic_overview, here("output", "characteristic_overview.xlsx"), rowNames=FALSE)
 
 
 # Logistic regression for indigenous(ref) and imported cases characteristic comparison -----
 
-# data modification, re-level malaria data for the regression
-sismal <- sismal |> 
+# re-level malaria data for the regression
+sismal_reg <- sismal_reg |> 
   mutate(
     gender = relevel(gender, ref = "Female"),
     pregnancy_status = relevel(pregnancy_status, ref = "Not pregnant"),
     occupation_mmp = relevel(occupation_mmp, ref = "NonMMP"),
-    hf_type = relevel(hf_type, ref = "PHC"),
-    case_detect = relevel(case_detect, ref = "PCD"),
-    lab = relevel(lab, ref = "Microscopy"),
     parasite = relevel(parasite, ref = "Pv"),
     hospitalisation = relevel(hospitalisation, ref = "Outpatient"),
     severity = relevel(severity, ref = "Uncomplicated malaria"),
     death = relevel(death, ref = "Recovered"),
-    relapsing = relevel(relapsing, ref = "New case"),
-    pq14 = relevel(pq14, ref = "Ya"))
+    relapsing = relevel(relapsing, ref = "New case"))
 
 
 ## Bivariable logistic regression -----
 
 characteristic_variables <- c("age_group", "gender", "pregnancy_status", "occupation_mmp", 
-                              "hf_type", "case_detect", "lab", "parasite",
+                              "hf_type", "case_detect", "lab", "parasite", "treatment",
                               "hospitalisation", "severity", "death", "relapsing", "pq14")
 
 char_bilogreg <- map_df(characteristic_variables, function(var) {
   formula_str <- paste("classification ~", var)
-  model <- glm(as.formula(formula_str), data = sismal, family = binomial)
+  model <- glm(as.formula(formula_str), data = sismal_reg, family = binomial)
   tidy(model, exponentiate = TRUE, conf.int = TRUE) |> 
     mutate(variable = var)
 })
@@ -352,17 +384,21 @@ char_bilogreg_results <- char_bilogreg |>
   select(term, estimate, std.error, statistic, conf.low, conf.high, p.value) |> 
   filter(term != "(Intercept)")
 
-write.xlsx(char_bilogreg_results, here("output","char_bilogreg.xlsx"), rowNames=FALSE)
+write.xlsx(char_bilogreg_results, here("output","char_bilogreg_v2.xlsx"), rowNames=FALSE)
 
 ## Multivariable logistic regression -----
 
 char_multilogreg <- glm(classification ~ age_group + gender + occupation_mmp  +
                           hf_type + case_detect + lab + parasite + hospitalisation +
-                          severity, data = sismal, family = binomial)
+                          severity, data = sismal_reg, family = binomial)
 summary(char_multilogreg)
-char_multilogreg_result <- tidy(char_multilogreg, exponentiate = TRUE, conf.int = TRUE)
+char_multilogreg_result <- tidy(char_multilogreg, exponentiate = TRUE, conf.int = TRUE) |> 
+  select(term, estimate, std.error, statistic, conf.low, conf.high, p.value) |> 
+  filter(term != "(Intercept)")
 
-write.xlsx(char_multilogreg_result, here("output","char_multilogreg.xlsx"), rowNames=FALSE)
+nobs(char_multilogreg)
+
+write.xlsx(char_multilogreg_result, here("output","char_multilogreg_v2.xlsx"), rowNames=FALSE)
 
 
 # Calculating adjacency matrix and nearest neighbours -----
@@ -495,7 +531,7 @@ logreg_results_5 <- tidy(logreg_model_5, exponentiate = TRUE, conf.int = TRUE) |
   mutate(conf.low = round(conf.low, 3),
          conf.high = round(conf.high, 3))
 vif(logreg_model_5)
-# model5 was choosen because it has no multicollinearity independent variables and lowest aic value
+# model5 was chosen because it has no multicollinearity independent variables and lowest aic value
 
 write.xlsx(logreg_results_5, here("output"), rowNames=FALSE)
 
